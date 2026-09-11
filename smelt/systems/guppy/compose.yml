@@ -4,7 +4,19 @@
 
 services:
   guppy:
-    image: ${GUPPY_IMAGE:-ghcr.io/fil-forge/guppy:main-dev}
+    # Pinned by digest, not by tag. guppy drives every e2e assertion, and
+    # :main-dev is republished on every push to guppy's main -- 39 times in
+    # the last 90 days -- so an unpinned driver means a failure here can be
+    # this repository's change or someone else's merge, with nothing in the
+    # log to tell them apart. findings.md records that costing a verdict
+    # once already: compat runs 35 and 36 disagreed on two stacks for this
+    # reason alone.
+    #
+    # Unlike indexing-service and swarf, this pin is not throwaway work:
+    # guppy does not move into this repository, it retires as the compat
+    # driver in the plan's Phase 5. Until then, bumping it is a deliberate
+    # commit.
+    image: ${GUPPY_IMAGE:-ghcr.io/fil-forge/guppy@sha256:4d8950d8171584f562df00c90a3dcd4f954c00ede10d1bb92eb6e93375b9d93d}
     volumes:
       - ../../generated/keys/guppy.pem:/keys/guppy.pem:ro
       - ./config/guppy-config.toml:/root/.config/guppy/config.toml:ro
