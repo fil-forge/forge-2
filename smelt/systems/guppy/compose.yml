@@ -4,13 +4,15 @@
 
 services:
   guppy:
-    # Pinned by digest, not by tag. guppy drives every e2e assertion, and
-    # :main-dev is republished on every push to guppy's main -- 39 times in
-    # the last 90 days -- so an unpinned driver means a failure here can be
+    # Pinned by digest, not by tag. guppy drives every e2e assertion here,
+    # and :main-dev is republished on every push to guppy's main -- 39 of
+    # them in the 90 days to 2026-09-14, so the tag moved about every other
+    # day. Runners are ephemeral and hold no image cache, so every run
+    # pulled whatever that tag meant that morning: a red result could be
     # this repository's change or someone else's merge, with nothing in the
-    # log to tell them apart. findings.md records that costing a verdict
-    # once already: compat runs 35 and 36 disagreed on two stacks for this
-    # reason alone.
+    # log to tell them apart. That ambiguity has already cost a verdict --
+    # two compat runs disagreed on two stacks with nothing between them but
+    # a new guppy build.
     #
     # Unlike indexing-service and swarf, this pin is not throwaway work:
     # guppy does not move into this repository, it retires as the compat
