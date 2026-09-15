@@ -44,10 +44,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # context "." means the repo root: these three carry a
-          # `replace => ../<svc>` that Go resolves before it downloads
-          # anything, so a context scoped to the service dir dies in
-          # `go mod download`. Each Dockerfile COPYs only its own derived
+          # context "." means the repo root, which a service needs when its
+          # go.mod carries a `replace => ../<svc>`: Go resolves that before
+          # it downloads anything, so a context scoped to the service dir
+          # dies in `go mod download`. Each Dockerfile COPYs only its own derived
           # module closure -- see the header comment in each.
           - service: piri
             context: .
@@ -63,6 +63,8 @@ jobs:
             context: delegator
           - service: piri-signing-service
             context: piri-signing-service
+          - service: swarf
+            context: swarf
     name: image ${{ matrix.service }}
     runs-on: ubuntu-24.04
     # piri links curio; its build time is the unknown this run measures.
