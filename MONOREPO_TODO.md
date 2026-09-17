@@ -225,77 +225,85 @@ slowest suites onto a different trigger.
 
 ## Decide how much more to spend making `itest ingot` fast
 
-Sharding took it from ~28 minutes to roughly half, without touching a test.
-The rest costs something, and the something is different in each case.
+Sharding is done and **measured**, and it did less than predicted: ~25% off the
+wall clock, not the "roughly half" this entry first claimed. The measurement
+also moved where the remaining time is, so read the numbers before the options.
 
-**Where the time actually goes**, measured rather than assumed, from the job
-log for a full run:
+### The A/B, run within four minutes of each other
 
-| | |
-|---|---|
-| the Go test binary | **1257s = 20m57s** (`ok …/ingot/itest 1257.018s`) |
-| everything else | ~7 min — checkout, setup-go, vet, staticcheck, tidy, and 8 image builds |
+Both on `ubuntu-24.04`, same runner pool, same hour, so this is a real
+comparison rather than a comparison against last night:
 
-Inside those 21 minutes: **13 top-level tests, 13 full stack boots**, and
-`stack_test.go` logs what each costs — `booting the smelt Forge stack (~1-2
-min…)`. The subtests themselves run in hundredths of a second. The suite is
-not slow; booting the stack thirteen times is.
+| | unsharded ([#19](https://github.com/fil-forge/forge-2/pull/19), run 35239716032) | sharded ([#21](https://github.com/fil-forge/forge-2/pull/21), run 35240022926) |
+|---|---|---|
+| `itest` workflow, start to finish | **30m43s** | **23m07s** |
+| slowest job, start to finish | 29m29s (`itest ingot`) | 17m07s (`itest ingot 1/3`) |
+| test binary | `ok …/ingot/itest` **1267.853s** | **628.841s** + **462.731s** + **204.654s** = 1296.226s |
+| runner-minutes, ingot only | 29m29s | 42m04s |
 
-Second measurement, separate from the above: **the same 8 images are built
-three times per pull request** — once as `images.yml`'s parallel jobs, once in
-`itest` per suite, once in `e2e`. 24 builds for 8 images.
+**The total test work did not change** — 1296.2s against 1267.9s, +2.2%, which
+is noise plus three process startups. Nothing got cheaper; it got spread. That
+was the intent, and it is worth stating plainly because it bounds every option
+below.
 
-**Done: shard by test.** The matrix splits ingot across three runners, with
-each shard deriving its own tests from `go test -list` rather than from a
-hand-written `-run` regex. Separate jobs get separate Docker hosts, which
-`stack.CleanupLeaked` requires. Wall clock roughly halves. It costs
-runner-minutes: each shard rebuilds all 8 images, so three shards build them
-three times over.
+### Where the predicted half went
 
-**Not done, and each is a real choice:**
+Three costs, none of which the "13 uniform boots" model had:
 
-- **Build the images once and load them.** `images.yml` already builds all 8;
-  `itest` and `e2e` could `docker load` from an artifact instead of
-  rebuilding. That saves ~6 minutes in each of several jobs *and* removes the
-  multiplier sharding just added. **The win is genuinely uncertain**: 8 images
-  is likely 1–2 GB of artifact round-trip, which eats back some of it, and
-  nobody has measured that. A registry would be faster, but `images.yml`
-  deliberately takes no `packages: write` so that fork pull requests work —
-  taking this path reopens a decision already made on purpose.
-- **Share one stack across tests.** Nine of the thirteen call plain
-  `forgeStack(t)` with no custom config; only four need their own
-  (`config-retention.yaml`, `withSmallBlobConfig`, `withMultipartTTLConfig`).
-  Booting once and sharing takes 13 boots down to 5.
+1. **The shards are not balanced: 629s / 463s / 205s.** The critical path is
+   the *slowest* shard, not the mean. A perfectly balanced 3-way split of
+   1296s would be 432s, so imbalance alone costs **~197s (3m17s)**.
 
-  **It is worth much less now than it was, because sharding already spent most
-  of it.** Both changes attack the same quantity, and they partly cancel:
-  stack sharing works within a process, so nine shared tests spread across
-  three shards boot the shared stack three times, not once. Taking 1257s over
-  13 boots, a boot is about 80 seconds, which puts ~1040s of that job in
-  booting and only ~217s in actual test work:
+   The round-robin splits by test *name order*, which silently assumes every
+   test costs about the same. It does not. Shard 1 drew `TestForgeVersity` —
+   the Versity S3-compatibility suite, hundreds of subtests, dozens of them
+   3-second object-lock retention waits — plus `TestForgeMultipartExpiryShred`
+   and `TestForgeReadAfterEviction`, which both wait on TTLs. Shard 3 drew four
+   cheap ones and finished in 205s.
 
-  | | boots on the critical path | est. wall clock |
-  |---|---|---|
-  | before | 13 | 28 min (measured) |
-  | sharded, as now | 5 | ~15 min |
-  | sharing only, unsharded | 5 | ~17 min |
-  | both | 3–5 | ~11–12 min |
+2. **Queue wait: 2m25s to 4m47s per shard** (4m47s on the critical one). Four
+   concurrent jobs where there were two, and the runners did not all start at
+   once. This is pure loss, and it grows with shard count.
 
-  So the *marginal* gain over what is already done is roughly **3 to 4
-  minutes**, not the 8 to 16 it would have been before sharding. For a change
-  that alters test isolation — needing per-test bucket and tenant namespacing,
-  in the one job that exists to catch flakiness — that is a much poorer trade
-  than it first looks. Everything below the "measured" row is an estimate;
-  only the 28 minutes and the 1257s are observed.
+3. **The image build, ~6 minutes, is per job and did not move.** Sharding
+   triplicated it in runner-minutes.
 
-**The choice, and it has moved.** At ~15 minutes the fixed overhead is about
-half the job, and most of it is the eight image builds — which sharding
-*multiplied* by three rather than reduced. Building once and loading is now
-the dominant lever and the shared stack is the marginal one, which is the
-reverse of how this entry first read. The honest next step is to measure the
-artifact round-trip rather than to argue about it. Worth keeping in view: every
-service brought in-repo adds a build, so the fixed part grows while the
-variable part has just been cut.
+### So the options have reordered again
+
+- **Build the images once and load them** — still the largest single lever, and
+  now clearly so: ~6 min sits on *every* shard's critical path, and there are
+  now four ingot-side jobs paying it instead of one. Unmeasured: 8 images is
+  likely 1–2 GB of artifact round-trip. A registry would be faster but
+  `images.yml` deliberately takes no `packages: write` so fork PRs work.
+- **Balance the shards by measured duration**, worth ~3m17s. The obvious
+  implementation is a hand-written grouping, which is the silent-green shape
+  this repository keeps deleting — a new test falls out of the list unnoticed.
+  A derived version works: carry the previous green run's per-test durations,
+  bin-pack against them, and give an unknown test the mean so it still runs and
+  merely unbalances slightly. That degrades safely, which the list does not.
+- **One test bounds everything.** `TestForgeVersity` is most of shard 1's 629s.
+  Until it is split or made internally parallel, no shard count gets the job
+  below roughly its own duration plus the ~6 min build plus queue. More shards
+  now buy very little.
+- **Share one stack across tests** — the estimate this entry carried twice, now
+  known to have been built on a wrong decomposition. The "~80s per boot,
+  1040s booting / 217s working" split assumed 13 uniform boots. It cannot be
+  right: shard 3 ran **four** tests, and so four boots, in 204.654s total, so a
+  boot is at most ~51s and the real split is far more evenly divided between
+  booting and working than assumed. **The shared stack is therefore worth less
+  than the 3–4 minutes previously estimated, not more** — and it still changes
+  test isolation in the one job that exists to catch flakiness. Parking it.
+
+**The honest next step is to measure the artifact round-trip**, which is the
+one number nobody has and the one lever that is clearly largest. Everything
+else here is now measured.
+
+**Also worth keeping in view:** the trade sharding actually made was **~43% more
+runner-minutes for ~25% less wall clock**. That was the right trade while PRs
+are the bottleneck; it is the wrong one if runner-minutes ever become the
+constraint, and every service brought in-repo adds another image build to the
+fixed half.
+
 
 ---
 
