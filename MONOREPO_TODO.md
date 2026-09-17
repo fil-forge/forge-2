@@ -265,17 +265,37 @@ three times over.
 - **Share one stack across tests.** Nine of the thirteen call plain
   `forgeStack(t)` with no custom config; only four need their own
   (`config-retention.yaml`, `withSmallBlobConfig`, `withMultipartTTLConfig`).
-  Booting once and sharing removes about eight boots — **the largest single
-  win available, 8 to 16 minutes** — but it changes test isolation, needs
-  per-test bucket and tenant namespacing, and a flaky itest is the one thing
-  this job exists to catch. Real work, not a tidy-up.
+  Booting once and sharing takes 13 boots down to 5.
 
-**The choice.** Whether to spend runner-minutes to buy wall clock (the current
-trade), spend engineering time on the shared stack instead (better return,
-higher risk), or measure the artifact path first and decide with a number.
-Worth noting the trend the sharding does not change: every service brought
-in-repo adds an image build to this job, so the fixed ~6 minutes grows while
-the variable part shrinks.
+  **It is worth much less now than it was, because sharding already spent most
+  of it.** Both changes attack the same quantity, and they partly cancel:
+  stack sharing works within a process, so nine shared tests spread across
+  three shards boot the shared stack three times, not once. Taking 1257s over
+  13 boots, a boot is about 80 seconds, which puts ~1040s of that job in
+  booting and only ~217s in actual test work:
+
+  | | boots on the critical path | est. wall clock |
+  |---|---|---|
+  | before | 13 | 28 min (measured) |
+  | sharded, as now | 5 | ~15 min |
+  | sharing only, unsharded | 5 | ~17 min |
+  | both | 3–5 | ~11–12 min |
+
+  So the *marginal* gain over what is already done is roughly **3 to 4
+  minutes**, not the 8 to 16 it would have been before sharding. For a change
+  that alters test isolation — needing per-test bucket and tenant namespacing,
+  in the one job that exists to catch flakiness — that is a much poorer trade
+  than it first looks. Everything below the "measured" row is an estimate;
+  only the 28 minutes and the 1257s are observed.
+
+**The choice, and it has moved.** At ~15 minutes the fixed overhead is about
+half the job, and most of it is the eight image builds — which sharding
+*multiplied* by three rather than reduced. Building once and loading is now
+the dominant lever and the shared stack is the marginal one, which is the
+reverse of how this entry first read. The honest next step is to measure the
+artifact round-trip rather than to argue about it. Worth keeping in view: every
+service brought in-repo adds a build, so the fixed part grows while the
+variable part has just been cut.
 
 ---
 
