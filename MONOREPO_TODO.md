@@ -270,11 +270,53 @@ Three costs, none of which the "13 uniform boots" model had:
 
 ### So the options have reordered again
 
-- **Build the images once and load them** — still the largest single lever, and
-  now clearly so: ~6 min sits on *every* shard's critical path, and there are
-  now four ingot-side jobs paying it instead of one. Unmeasured: 8 images is
-  likely 1–2 GB of artifact round-trip. A registry would be faster but
-  `images.yml` deliberately takes no `packages: write` so fork PRs work.
+- **Turn on a Docker layer cache in `itest` and `e2e`** — the cheapest thing on
+  this list and, as far as the tree shows, never actually decided against.
+  `itest.yml:143` and `e2e.yml:118` both shell out to plain
+  `docker build`, which cannot use `--cache-from type=gha` at all; only
+  `images.yml` uses buildx, via `docker/build-push-action@v6`. The
+  "No caching, deliberately (2026-09-11)" comment lives in `images.yml` and
+  gives a reason specific to *that* workflow — "the point is to provoke build
+  failures, not to avoid them". That reason does not obviously carry: in
+  `itest` and `e2e` the build is a means to running the tests, and `images.yml`
+  is already proving the cold build works, on the same commit, on every pull
+  request, in parallel. **Keeping `images.yml` uncached as the canary and
+  caching the other two would preserve the whole point of the decision** and
+  take up to ~6 min off each of four jobs. Needs
+  `docker/setup-buildx-action` plus `buildx build --cache-from/--cache-to
+  type=gha --load`; the risk is a stale cache masking a Dockerfile fault,
+  which is exactly what the canary is for.
+- **Build the images once and load them** — the same ~6 min, attacked from the
+  other side: `images.yml` already builds all 8 and could hand them over as an
+  artifact. Unmeasured, and the uncertainty is real: 8 images is likely 1–2 GB
+  of round-trip. A registry would be faster but `images.yml` deliberately takes
+  no `packages: write` so fork PRs work. **Try the cache first** — it is a
+  handful of lines, needs no cross-job plumbing, and if it works this option
+  stops mattering.
+- **`lockWaitTime` in our own versitygw fork is 3 seconds, and it is
+  self-imposed.** `tests/integration/utils.go:2654` in
+  `github.com/fil-forge/versitygw` (pinned at
+  `v0.0.0-20260914113944-a628e2cc628c`) sets
+
+      lockWaitTime time.Duration = time.Second * 3
+
+  and `cleanupLockedObjects` uses it twice: it sets
+  `RetainUntilDate: time.Now().Add(lockWaitTime)` and then sleeps the same
+  duration waiting for the lock it just created to lapse. Nothing external
+  requires 3 seconds — the teardown picks the retention date itself.
+
+  **38 call sites** across `Access_Control.go`, `CopyObject.go`,
+  `CreateMultipartUpload.go`, `GetObject*.go`, `PutObject*.go`,
+  `WORM_protection.go` and `versioning.go`, so at one firing each that is
+  **~114s of pure `time.Sleep`** — roughly a sixth of shard 1's 629s, and
+  `TestForgeVersity` is the test that bounds the whole job.
+
+  3s → 1s would save ~76s. **1s is the safe floor until someone checks**
+  whether sub-second `RetainUntilDate` round-trips through ingot's object-lock
+  path; the S3 header is a timestamp, and second granularity is the
+  conservative assumption rather than a verified one. versitygw is a fork we
+  control, so this is a one-line change — but it is **not** in this
+  repository, so it lands upstream first and arrives here as a pin bump.
 - **Balance the shards by measured duration**, worth ~3m17s. The obvious
   implementation is a hand-written grouping, which is the silent-green shape
   this repository keeps deleting — a new test falls out of the list unnoticed.
